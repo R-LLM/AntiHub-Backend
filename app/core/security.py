@@ -5,6 +5,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import uuid
+import secrets
 
 from passlib.context import CryptContext
 import jwt
@@ -81,6 +82,7 @@ def create_access_token(
         "exp": expire,  # Expiration Time: 过期时间
         "iat": now,  # Issued At: 签发时间
         "jti": str(uuid.uuid4()),  # JWT ID: 唯一标识符
+        "type": "access",  # Token 类型
     }
     
     # 添加额外的声明
@@ -127,6 +129,113 @@ def verify_access_token(token: str) -> Optional[Dict[str, Any]]:
         # 令牌无效
         raise
 
+
+# ==================== Refresh Token 管理 ====================
+
+def create_refresh_token(
+    user_id: int,
+    username: str,
+    additional_claims: Optional[Dict[str, Any]] = None
+) -> str:
+    """
+    创建 Refresh Token
+    
+    Args:
+        user_id: 用户 ID
+        username: 用户名
+        additional_claims: 额外的声明数据
+        
+    Returns:
+        Refresh Token 字符串
+    """
+    settings = get_settings()
+    
+    # 计算过期时间
+    now = datetime.utcnow()
+    expire = now + timedelta(seconds=settings.refresh_token_expire_seconds)
+    
+    # 构建 JWT payload
+    payload = {
+        "sub": str(user_id),  # Subject: 用户 ID
+        "username": username,  # 用户名
+        "exp": expire,  # Expiration Time: 过期时间
+        "iat": now,  # Issued At: 签发时间
+        "jti": str(uuid.uuid4()),  # JWT ID: 唯一标识符
+        "type": "refresh",  # Token 类型
+    }
+    
+    # 添加额外的声明
+    if additional_claims:
+        payload.update(additional_claims)
+    
+    # 生成 Refresh Token（使用不同的密钥）
+    token = jwt.encode(
+        payload,
+        settings.refresh_secret_key,
+        algorithm=settings.jwt_algorithm
+    )
+    
+    return token
+
+
+def verify_refresh_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    验证 Refresh Token
+    
+    Args:
+        token: Refresh Token 字符串
+        
+    Returns:
+        验证成功返回 payload 字典
+        
+    Raises:
+        ExpiredSignatureError: 令牌已过期
+        InvalidTokenError: 令牌无效
+    """
+    settings = get_settings()
+    
+    try:
+        payload = jwt.decode(
+            token,
+            settings.refresh_secret_key,
+            algorithms=[settings.jwt_algorithm]
+        )
+        
+        # 验证 token 类型
+        if payload.get("type") != "refresh":
+            raise InvalidTokenError("Invalid token type")
+        
+        return payload
+    except ExpiredSignatureError:
+        # 令牌已过期
+        raise
+    except InvalidTokenError:
+        # 令牌无效
+        raise
+
+
+def generate_token_pair(
+    user_id: int,
+    username: str,
+    additional_claims: Optional[Dict[str, Any]] = None
+) -> tuple[str, str]:
+    """
+    生成 Access Token 和 Refresh Token 对
+    
+    Args:
+        user_id: 用户 ID
+        username: 用户名
+        additional_claims: 额外的声明数据
+        
+    Returns:
+        (access_token, refresh_token) 元组
+    """
+    access_token = create_access_token(user_id, username, additional_claims)
+    refresh_token = create_refresh_token(user_id, username, additional_claims)
+    return access_token, refresh_token
+
+
+# ==================== 通用令牌工具函数 ====================
 
 def decode_token_without_verification(token: str) -> Optional[Dict[str, Any]]:
     """
@@ -196,4 +305,20 @@ def extract_token_jti(token: str) -> Optional[str]:
     payload = decode_token_without_verification(token)
     if payload and "jti" in payload:
         return payload["jti"]
+    return None
+
+
+def get_token_type(token: str) -> Optional[str]:
+    """
+    获取令牌类型 (access 或 refresh)
+    
+    Args:
+        token: JWT 令牌字符串
+        
+    Returns:
+        令牌类型字符串,失败返回 None
+    """
+    payload = decode_token_without_verification(token)
+    if payload and "type" in payload:
+        return payload["type"]
     return None

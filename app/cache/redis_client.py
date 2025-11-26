@@ -265,6 +265,136 @@ class RedisClient:
         key = f"blacklist:{token_jti}"
         return await self.exists(key)
     
+    # ==================== Refresh Token 管理功能 ====================
+    
+    async def store_refresh_token(
+        self,
+        user_id: int,
+        token_jti: str,
+        token_data: dict,
+        ttl: int
+    ) -> bool:
+        """
+        存储 Refresh Token 信息
+        
+        Args:
+            user_id: 用户 ID
+            token_jti: Refresh Token 的 JTI
+            token_data: Token 相关数据
+            ttl: 有效期(秒)
+            
+        Returns:
+            存储成功返回 True
+        """
+        # 存储 token -> user 映射
+        token_key = f"refresh_token:{token_jti}"
+        await self.set_json(token_key, token_data, expire=ttl)
+        
+        # 存储 user -> tokens 映射（支持多设备登录）
+        user_tokens_key = f"user_refresh_tokens:{user_id}"
+        tokens = await self.get_json(user_tokens_key) or []
+        
+        # 清理过期的 token JTI
+        valid_tokens = []
+        for t_jti in tokens:
+            if await self.exists(f"refresh_token:{t_jti}"):
+                valid_tokens.append(t_jti)
+        
+        # 添加新的 token JTI
+        valid_tokens.append(token_jti)
+        await self.set_json(user_tokens_key, valid_tokens, expire=ttl)
+        
+        return True
+    
+    async def get_refresh_token_data(self, token_jti: str) -> Optional[dict]:
+        """
+        获取 Refresh Token 数据
+        
+        Args:
+            token_jti: Refresh Token 的 JTI
+            
+        Returns:
+            Token 数据,不存在返回 None
+        """
+        key = f"refresh_token:{token_jti}"
+        return await self.get_json(key)
+    
+    async def revoke_refresh_token(self, token_jti: str) -> bool:
+        """
+        撤销单个 Refresh Token
+        
+        Args:
+            token_jti: Refresh Token 的 JTI
+            
+        Returns:
+            撤销成功返回 True
+        """
+        key = f"refresh_token:{token_jti}"
+        result = await self.delete(key)
+        return result > 0
+    
+    async def revoke_all_user_refresh_tokens(self, user_id: int) -> bool:
+        """
+        撤销用户的所有 Refresh Token（用于登出所有设备）
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            撤销成功返回 True
+        """
+        user_tokens_key = f"user_refresh_tokens:{user_id}"
+        tokens = await self.get_json(user_tokens_key) or []
+        
+        # 删除所有 refresh token
+        for token_jti in tokens:
+            await self.delete(f"refresh_token:{token_jti}")
+        
+        # 删除用户的 token 列表
+        await self.delete(user_tokens_key)
+        
+        return True
+    
+    async def is_refresh_token_valid(self, token_jti: str) -> bool:
+        """
+        检查 Refresh Token 是否有效（未被撤销）
+        
+        Args:
+            token_jti: Refresh Token 的 JTI
+            
+        Returns:
+            有效返回 True,否则返回 False
+        """
+        key = f"refresh_token:{token_jti}"
+        return await self.exists(key)
+    
+    async def rotate_refresh_token(
+        self,
+        old_token_jti: str,
+        new_token_jti: str,
+        user_id: int,
+        token_data: dict,
+        ttl: int
+    ) -> bool:
+        """
+        轮换 Refresh Token（撤销旧的，创建新的）
+        
+        Args:
+            old_token_jti: 旧 Refresh Token 的 JTI
+            new_token_jti: 新 Refresh Token 的 JTI
+            user_id: 用户 ID
+            token_data: 新 Token 的数��
+            ttl: 新 Token 的有效期(秒)
+            
+        Returns:
+            轮换成功返回 True
+        """
+        # 撤销旧 token
+        await self.revoke_refresh_token(old_token_jti)
+        
+        # 存储新 token
+        return await self.store_refresh_token(user_id, new_token_jti, token_data, ttl)
+    
     # ==================== OAuth State 存储功能 ====================
     
     async def store_oauth_state(

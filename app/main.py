@@ -2,6 +2,7 @@
 FastAPI 应用主文件
 应用入口点和配置
 """
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -14,6 +15,12 @@ from app.core.exceptions import BaseAPIException
 from app.db.session import init_db, close_db
 from app.cache import init_redis, close_redis
 from app.api.routes import auth_router, health_router, plugin_api_router, api_keys_router, v1_router, usage_router
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 
 # ==================== 生命周期事件 ====================

@@ -37,10 +37,12 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """登录响应"""
+    """登录响应（包含 refresh token）"""
     
     access_token: str = Field(..., description="JWT 访问令牌")
+    refresh_token: str = Field(..., description="刷新令牌")
     token_type: str = Field(default="bearer", description="令牌类型")
+    expires_in: int = Field(..., description="Access Token 过期时间（秒）")
     user: "UserResponse" = Field(..., description="用户信息")
     
     model_config = {
@@ -48,7 +50,9 @@ class LoginResponse(BaseModel):
             "examples": [
                 {
                     "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
                     "token_type": "bearer",
+                    "expires_in": 86400,
                     "user": {
                         "id": 1,
                         "username": "johndoe",
@@ -57,6 +61,46 @@ class LoginResponse(BaseModel):
                         "is_active": True,
                         "is_silenced": False
                     }
+                }
+            ]
+        }
+    }
+
+
+# ==================== Token 刷新相关 ====================
+
+class RefreshTokenRequest(BaseModel):
+    """刷新令牌请求"""
+    
+    refresh_token: str = Field(..., description="刷新令牌")
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                }
+            ]
+        }
+    }
+
+
+class RefreshTokenResponse(BaseModel):
+    """刷新令牌响应"""
+    
+    access_token: str = Field(..., description="新的 JWT 访问令牌")
+    refresh_token: str = Field(..., description="新的刷新令牌（可选轮换）")
+    token_type: str = Field(default="bearer", description="令牌类型")
+    expires_in: int = Field(..., description="Access Token 过期时间（秒）")
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "token_type": "bearer",
+                    "expires_in": 86400
                 }
             ]
         }
@@ -102,6 +146,22 @@ class OAuthInitiateResponse(BaseModel):
 
 
 # ==================== 登出相关 ====================
+
+class LogoutRequest(BaseModel):
+    """登出请求（可选提供 refresh token 以使其失效）"""
+    
+    refresh_token: Optional[str] = Field(None, description="刷新令牌（可选）")
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                }
+            ]
+        }
+    }
+
 
 class LogoutResponse(BaseModel):
     """登出响应"""

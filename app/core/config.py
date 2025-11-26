@@ -30,7 +30,11 @@ class Settings(BaseSettings):
     # JWT 配置
     jwt_secret_key: str = Field(..., description="JWT 密钥")
     jwt_algorithm: str = Field(default="HS256", description="JWT 算法")
-    jwt_expire_hours: int = Field(default=24, description="JWT 过期时间（小时）")
+    jwt_expire_hours: int = Field(default=24, description="Access Token 过期时间（小时）")
+    
+    # Refresh Token 配置
+    refresh_token_expire_days: int = Field(default=7, description="Refresh Token 过期时间（天）")
+    refresh_token_secret_key: Optional[str] = Field(default=None, description="Refresh Token 密钥（默认使用 JWT 密钥）")
     
     # OAuth 配置
     oauth_client_id: str = Field(..., description="OAuth Client ID")
@@ -65,7 +69,7 @@ class Settings(BaseSettings):
     @field_validator("app_env")
     @classmethod
     def validate_app_env(cls, v: str) -> str:
-        """验证应用环境"""
+        """验证应用���境"""
         allowed_envs = ["development", "staging", "production"]
         if v not in allowed_envs:
             raise ValueError(f"app_env must be one of {allowed_envs}")
@@ -89,6 +93,14 @@ class Settings(BaseSettings):
             raise ValueError("jwt_expire_hours must be positive")
         return v
     
+    @field_validator("refresh_token_expire_days")
+    @classmethod
+    def validate_refresh_token_expire_days(cls, v: int) -> int:
+        """验证 Refresh Token 过期时间"""
+        if v <= 0:
+            raise ValueError("refresh_token_expire_days must be positive")
+        return v
+    
     @property
     def is_development(self) -> bool:
         """是否为开发环境"""
@@ -103,6 +115,16 @@ class Settings(BaseSettings):
     def jwt_expire_seconds(self) -> int:
         """JWT 过期时间（秒）"""
         return self.jwt_expire_hours * 3600
+    
+    @property
+    def refresh_token_expire_seconds(self) -> int:
+        """Refresh Token 过期时间（秒）"""
+        return self.refresh_token_expire_days * 24 * 3600
+    
+    @property
+    def refresh_secret_key(self) -> str:
+        """获取 Refresh Token 密钥"""
+        return self.refresh_token_secret_key or self.jwt_secret_key
 
 
 # 全局配置实例

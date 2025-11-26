@@ -2,18 +2,23 @@
 认证服务
 提供用户认证、JWT 令牌管理、会话管理等功能
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError as JWTInvalidTokenError
 
 from app.core.security import (
     verify_password,
     create_access_token,
     verify_access_token,
+    create_refresh_token,
+    verify_refresh_token,
+    generate_token_pair,
     extract_token_jti,
     get_token_remaining_seconds,
 )
+from app.core.config import get_settings
 from app.core.exceptions import (
     InvalidCredentialsError,
     InvalidTokenError,
@@ -43,6 +48,7 @@ class AuthService:
         self.db = db
         self.redis = redis
         self.user_repo = UserRepository(db)
+        self._settings = get_settings()
     
     async def authenticate_user(
         self,
@@ -113,6 +119,44 @@ class AuthService:
         )
         return token
     
+    async def create_token_pair(
+        self,
+        user: User,
+        additional_claims: Optional[Dict[str, Any]] = None
+    ) -> Tuple[str, str]:
+        """
+        为用户创建 Access Token 和 Refresh Token 对
+        
+        Args:
+            user: 用户对象
+            additional_claims: 额外的声明数据
+            
+        Returns:
+            (access_token, refresh_token) 元组
+        """
+        access_token, refresh_token = generate_token_pair(
+            user_id=user.id,
+            username=user.username,
+            additional_claims=additional_claims
+        )
+        
+        # 存储 refresh token 到 Redis
+        refresh_jti = extract_token_jti(refresh_token)
+        if refresh_jti:
+            token_data = {
+                "user_id": user.id,
+                "username": user.username,
+                "created_at": datetime.utcnow().isoformat()
+            }
+            await self.redis.store_refresh_token(
+                user_id=user.id,
+                token_jti=refresh_jti,
+                token_data=token_data,
+                ttl=self._settings.refresh_token_expire_seconds
+            )
+        
+        return access_token, refresh_token
+    
     async def verify_token(self, token: str) -> TokenPayload:
         """
         验证 JWT 令牌
@@ -144,11 +188,90 @@ class AuthService:
             
             return TokenPayload(**payload)
             
+        except ExpiredSignatureError:
+            raise TokenExpiredError(message="令牌已过期")
+        except JWTInvalidTokenError:
+            raise InvalidTokenError(message="令牌无效")
         except Exception as e:
             if "expired" in str(e).lower():
                 raise TokenExpiredError(message="令牌已过期")
             raise InvalidTokenError(
                 message="令牌无效",
+                details={"error": str(e)}
+            )
+    
+    async def refresh_tokens(
+        self,
+        refresh_token: str
+    ) -> Tuple[str, str, User]:
+        """
+        使用 Refresh Token 刷新令牌对
+        
+        Args:
+            refresh_token: Refresh Token 字符串
+            
+        Returns:
+            (new_access_token, new_refresh_token, user) 元组
+            
+        Raises:
+            InvalidTokenError: Refresh Token 无效
+            TokenExpiredError: Refresh Token 已过期
+            TokenBlacklistedError: Refresh Token 已被撤销
+            UserNotFoundError: 用户不存在
+            AccountDisabledError: 账号已被禁用
+        """
+        try:
+            # 验证 refresh token
+            payload = verify_refresh_token(refresh_token)
+            if not payload:
+                raise InvalidTokenError(message="Refresh Token 无效")
+            
+            # 检查 refresh token 是否已被撤销
+            jti = payload.get("jti")
+            if jti and not await self.redis.is_refresh_token_valid(jti):
+                raise TokenBlacklistedError(
+                    message="Refresh Token 已被撤销",
+                    details={"jti": jti}
+                )
+            
+            # 获取用户
+            user_id = int(payload.get("sub"))
+            user = await self.user_repo.get_by_id(user_id)
+            
+            if not user:
+                raise UserNotFoundError(
+                    message="用户不存在",
+                    details={"user_id": user_id}
+                )
+            
+            # 检查账号状态
+            if not user.is_active:
+                raise AccountDisabledError(
+                    message="账号已被禁用",
+                    details={"user_id": user.id}
+                )
+            
+            # 生成新的令牌对
+            new_access_token, new_refresh_token = await self.create_token_pair(user)
+            
+            # 轮换 refresh token（撤销旧的）
+            new_refresh_jti = extract_token_jti(new_refresh_token)
+            if jti and new_refresh_jti:
+                await self.redis.revoke_refresh_token(jti)
+            
+            return new_access_token, new_refresh_token, user
+            
+        except ExpiredSignatureError:
+            raise TokenExpiredError(message="Refresh Token 已过期")
+        except JWTInvalidTokenError:
+            raise InvalidTokenError(message="Refresh Token 无效")
+        except (TokenBlacklistedError, UserNotFoundError, AccountDisabledError):
+            raise
+        except Exception as e:
+            if "expired" in str(e).lower():
+                raise TokenExpiredError(message="Refresh Token 已过期")
+            raise InvalidTokenError(
+                message="Refresh Token 无效",
                 details={"error": str(e)}
             )
     
@@ -283,7 +406,7 @@ class AuthService:
         self,
         username: str,
         password: str
-    ) -> tuple[str, User]:
+    ) -> Tuple[str, str, User]:
         """
         用户登录
         
@@ -292,7 +415,7 @@ class AuthService:
             password: 密码
             
         Returns:
-            (JWT 令牌, User 对象)
+            (access_token, refresh_token, User 对象)
         """
         # 验证用户
         user = await self.authenticate_user(username, password)
@@ -300,21 +423,27 @@ class AuthService:
         # 更新最后登录时间
         await self.user_repo.update_last_login(user.id)
         
-        # 创建令牌
-        token = await self.create_user_token(user)
+        # 创建令牌对
+        access_token, refresh_token = await self.create_token_pair(user)
         
         # 创建会话
-        await self.create_session(user.id, token)
+        await self.create_session(user.id, access_token)
         
-        return token, user
+        return access_token, refresh_token, user
     
-    async def logout(self, user_id: int, token: str) -> bool:
+    async def logout(
+        self,
+        user_id: int,
+        access_token: str,
+        refresh_token: Optional[str] = None
+    ) -> bool:
         """
         用户登出
         
         Args:
             user_id: 用户 ID
-            token: JWT 令牌
+            access_token: JWT 访问令牌
+            refresh_token: Refresh Token（可选）
             
         Returns:
             登出成功返回 True
@@ -322,7 +451,31 @@ class AuthService:
         # 删除会话
         await self.delete_session(user_id)
         
-        # 将令牌加入黑名单
-        await self.blacklist_token(token)
+        # 将 access token 加入黑名单
+        await self.blacklist_token(access_token)
+        
+        # 如果提供了 refresh token，撤销它
+        if refresh_token:
+            refresh_jti = extract_token_jti(refresh_token)
+            if refresh_jti:
+                await self.redis.revoke_refresh_token(refresh_jti)
+        
+        return True
+    
+    async def logout_all_devices(self, user_id: int) -> bool:
+        """
+        登出所有设备（撤销用户的所有 refresh token）
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            登出成功返回 True
+        """
+        # 删除会话
+        await self.delete_session(user_id)
+        
+        # 撤销所有 refresh token
+        await self.redis.revoke_all_user_refresh_tokens(user_id)
         
         return True

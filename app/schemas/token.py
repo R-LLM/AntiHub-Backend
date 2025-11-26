@@ -17,6 +17,7 @@ class TokenPayload(BaseModel):
     exp: datetime = Field(..., description="过期时间")
     iat: datetime = Field(..., description="签发时间")
     jti: str = Field(..., description="JWT ID: 唯一标识符")
+    type: Optional[str] = Field(default="access", description="令牌类型: access 或 refresh")
     
     model_config = {
         "json_schema_extra": {
@@ -26,7 +27,8 @@ class TokenPayload(BaseModel):
                     "username": "johndoe",
                     "exp": "2024-12-31T23:59:59",
                     "iat": "2024-12-30T00:00:00",
-                    "jti": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                    "jti": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "type": "access"
                 }
             ]
         }
@@ -47,6 +49,30 @@ class TokenResponse(BaseModel):
                     "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
                     "token_type": "bearer",
                     "expires_in": 86400
+                }
+            ]
+        }
+    }
+
+
+class TokenPairResponse(BaseModel):
+    """令牌对响应（包含 access_token 和 refresh_token）"""
+    
+    access_token: str = Field(..., description="访问令牌")
+    refresh_token: str = Field(..., description="刷新令牌")
+    token_type: str = Field(default="bearer", description="令牌类型")
+    expires_in: int = Field(..., description="Access Token 过期时间(秒)")
+    refresh_expires_in: int = Field(..., description="Refresh Token 过期时间(秒)")
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    "token_type": "bearer",
+                    "expires_in": 86400,
+                    "refresh_expires_in": 604800
                 }
             ]
         }
@@ -148,7 +174,8 @@ class TokenVerifyResponse(BaseModel):
                         "username": "johndoe",
                         "exp": "2024-12-31T23:59:59",
                         "iat": "2024-12-30T00:00:00",
-                        "jti": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                        "jti": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                        "type": "access"
                     },
                     "error": None
                 }

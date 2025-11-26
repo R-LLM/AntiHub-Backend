@@ -1,8 +1,8 @@
 """
 认证相关的 API 路由
-提供登录、登出、OAuth 认证等端点
+提供登录、登出、OAuth 认证、Token 刷新等端点
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.api.deps import (
@@ -22,16 +22,24 @@ from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
+    LogoutRequest,
     LogoutResponse,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
     OAuthInitiateResponse,
     OAuthCallbackParams,
 )
 from app.schemas.user import UserResponse, OAuthUserCreate
+from app.core.config import get_settings
 from app.core.exceptions import (
     InvalidCredentialsError,
     InvalidOAuthStateError,
     OAuthError,
     AccountDisabledError,
+    InvalidTokenError,
+    TokenExpiredError,
+    TokenBlacklistedError,
+    UserNotFoundError,
 )
 
 
@@ -44,7 +52,7 @@ router = APIRouter(prefix="/auth", tags=["认证"])
     "/login",
     response_model=LoginResponse,
     summary="用户名密码登录",
-    description="使用用户名和密码进行传统登录"
+    description="使用用户名和密码进行传统登录，返回 access_token 和 refresh_token"
 )
 async def login(
     request: LoginRequest,
@@ -56,19 +64,22 @@ async def login(
     - **username**: 用户名
     - **password**: 密码
     
-    返回 JWT 访问令牌和用户信息
+    返回 JWT 访问令牌、刷新令牌和用户信息
     """
+    settings = get_settings()
     try:
         # 登录
-        token, user = await auth_service.login(
+        access_token, refresh_token, user = await auth_service.login(
             username=request.username,
             password=request.password
         )
         
         # 返回响应
         return LoginResponse(
-            access_token=token,
+            access_token=access_token,
+            refresh_token=refresh_token,
             token_type="bearer",
+            expires_in=settings.jwt_expire_seconds,
             user=UserResponse.model_validate(user)
         )
         
@@ -86,6 +97,73 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"登录失败"
+        )
+
+
+# ==================== Token 刷新 ====================
+
+@router.post(
+    "/refresh",
+    response_model=RefreshTokenResponse,
+    summary="刷新访问令牌",
+    description="使用 refresh_token 获取新的 access_token 和 refresh_token（无感刷新）"
+)
+async def refresh_token(
+    request: RefreshTokenRequest,
+    auth_service: AuthService = Depends(get_auth_service)
+):
+    """
+    刷新访问令牌
+    
+    使用有效的 refresh_token 获取新的令牌对，实现无感刷新
+    
+    - **refresh_token**: 刷新令牌
+    
+    返回新的 access_token 和 refresh_token
+    
+    注意：每次刷新后，旧的 refresh_token 将失效（Token 轮换机制）
+    """
+    settings = get_settings()
+    try:
+        # 刷新令牌
+        new_access_token, new_refresh_token, user = await auth_service.refresh_tokens(
+            refresh_token=request.refresh_token
+        )
+        
+        # 返回响应
+        return RefreshTokenResponse(
+            access_token=new_access_token,
+            refresh_token=new_refresh_token,
+            token_type="bearer",
+            expires_in=settings.jwt_expire_seconds
+        )
+        
+    except TokenExpiredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh Token 已过期，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    except (InvalidTokenError, TokenBlacklistedError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh Token 无效��已被撤销",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    except UserNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在"
+        )
+    except AccountDisabledError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"刷新令牌失败"
         )
 
 
@@ -149,6 +227,7 @@ async def oauth_callback(
     
     验证 state,交换访问令牌,获取用户信息,创建或更新用户,返回系统 JWT 令牌
     """
+    settings = get_settings()
     try:
         # 1. 验证 state
         await oauth_service.verify_state(state)
@@ -191,16 +270,18 @@ async def oauth_callback(
         # 6. 更新最后登录时间
         await user_service.update_last_login(user.id)
         
-        # 7. 创建系统 JWT 令牌
-        system_token = await auth_service.create_user_token(user)
+        # 7. 创建系统令牌对（access + refresh）
+        access_token, refresh_token = await auth_service.create_token_pair(user)
         
         # 8. 创建会话
-        await auth_service.create_session(user.id, system_token)
+        await auth_service.create_session(user.id, access_token)
         
         # 9. 返回响应
         return LoginResponse(
-            access_token=system_token,
+            access_token=access_token,
+            refresh_token=refresh_token,
             token_type="bearer",
+            expires_in=settings.jwt_expire_seconds,
             user=UserResponse.model_validate(user)
         )
         
@@ -282,6 +363,7 @@ async def github_oauth_callback(
     
     验证 state,交换访问令牌,获取用户信息,创建或更新用户,返回系统 JWT 令牌
     """
+    settings = get_settings()
     code = params.code
     state = params.state
     try:
@@ -335,16 +417,18 @@ async def github_oauth_callback(
         # 6. 更新最后登录时间
         await user_service.update_last_login(user.id)
         
-        # 7. 创建系统 JWT 令牌
-        system_token = await auth_service.create_user_token(user)
+        # 7. 创建系统令牌对（access + refresh）
+        access_token, refresh_token = await auth_service.create_token_pair(user)
         
         # 8. 创建会话
-        await auth_service.create_session(user.id, system_token)
+        await auth_service.create_session(user.id, access_token)
         
         # 9. 返回响应
         return LoginResponse(
-            access_token=system_token,
+            access_token=access_token,
+            refresh_token=refresh_token,
             token_type="bearer",
+            expires_in=settings.jwt_expire_seconds,
             user=UserResponse.model_validate(user)
         )
         
@@ -374,23 +458,41 @@ async def github_oauth_callback(
     description="登出当前用户,删除会话并将令牌加入黑名单"
 )
 async def logout(
+    request: Request,
+    logout_request: LogoutRequest = None,
     current_user: User = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     用户登出
     
-    需要在请求头中提供有效的 JWT 令牌:
+    需要在请求头中提��有效的 JWT 令牌:
     ```
     Authorization: Bearer <your_token>
     ```
     
-    登出后令牌将失效
+    可选提供 refresh_token 以使其失效
+    
+    登出后 access_token 和 refresh_token 都将失效
     """
     try:
-        # 从依赖注入中无法直接获取原始令牌,需要从请求头中提取
-        # 这里简化处理,直接删除会话即可
-        await auth_service.delete_session(current_user.id)
+        # 从请求头中提取 access token
+        auth_header = request.headers.get("Authorization", "")
+        access_token = ""
+        if auth_header.startswith("Bearer "):
+            access_token = auth_header[7:]
+        
+        # 获取 refresh token（如果提供）
+        refresh_token = None
+        if logout_request and logout_request.refresh_token:
+            refresh_token = logout_request.refresh_token
+        
+        # 执行登出
+        await auth_service.logout(
+            user_id=current_user.id,
+            access_token=access_token,
+            refresh_token=refresh_token
+        )
         
         return LogoutResponse(
             message="登出成功",
@@ -404,7 +506,42 @@ async def logout(
         )
 
 
-# ==================== 获取当前用户信息 ====================
+@router.post(
+    "/logout-all",
+    response_model=LogoutResponse,
+    summary="登出所有设备",
+    description="登出当前用户的所有设备,撤销所有 refresh token"
+)
+async def logout_all_devices(
+    current_user: User = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service)
+):
+    """
+    登出所有设备
+    
+    需要在请求头中提供有效的 JWT 令牌:
+    ```
+    Authorization: Bearer <your_token>
+    ```
+    
+    此操作将撤销用户的所有 refresh token，使所有设备都需要��新登录
+    """
+    try:
+        await auth_service.logout_all_devices(current_user.id)
+        
+        return LogoutResponse(
+            message="已登出所有设备",
+            success=True
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"登出失败"
+        )
+
+
+# ==================== 获取当前用��信息 ====================
 
 @router.get(
     "/me",
