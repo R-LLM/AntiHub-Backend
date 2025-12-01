@@ -343,9 +343,6 @@ class PluginAPIService:
         if not api_key:
             raise ValueError("用户未配置plug-in API密钥")
         
-        # 更新最后使用时间
-        await self.update_last_used(user_id)
-        
         # 发送流式请求
         url = f"{self.base_url}{path}"
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -360,11 +357,12 @@ class PluginAPIService:
                 url=url,
                 json=json_data,
                 headers=headers,
-                timeout=300.0
+                timeout=httpx.Timeout(300.0, connect=10.0)
             ) as response:
                 response.raise_for_status()
-                async for chunk in response.aiter_bytes():
-                    yield chunk
+                async for chunk in response.aiter_raw():
+                    if chunk:
+                        yield chunk
     
     # ==================== 具体API方法 ====================
     
@@ -436,6 +434,20 @@ class PluginAPIService:
             user_id=user_id,
             method="DELETE",
             path=f"/api/accounts/{cookie_id}"
+        )
+    
+    async def update_account_name(
+        self,
+        user_id: int,
+        cookie_id: str,
+        name: str
+    ) -> Dict[str, Any]:
+        """更新账号名称"""
+        return await self.proxy_request(
+            user_id=user_id,
+            method="PUT",
+            path=f"/api/accounts/{cookie_id}/name",
+            json_data={"name": name}
         )
     
     async def get_account_quotas(

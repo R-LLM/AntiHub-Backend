@@ -165,11 +165,12 @@ class KiroService:
                 url=url,
                 json=json_data,
                 headers=headers,
-                timeout=300.0
+                timeout=httpx.Timeout(300.0, connect=10.0)
             ) as response:
                 response.raise_for_status()
-                async for chunk in response.aiter_bytes():
-                    yield chunk
+                async for chunk in response.aiter_raw():
+                    if chunk:
+                        yield chunk
     
     #==================== Kiro账号管理 ====================
     

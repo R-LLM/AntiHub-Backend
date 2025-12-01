@@ -18,6 +18,7 @@ from app.schemas.plugin_api import (
     OAuthCallbackRequest,
     UpdateCookiePreferenceRequest,
     UpdateAccountStatusRequest,
+    UpdateAccountNameRequest,
     ChatCompletionRequest,
     PluginAPIResponse,
 )
@@ -71,6 +72,12 @@ async def get_oauth_authorize_url(
 ):
     """获取OAuth授权URL"""
     try:
+        print(f"📤 [oauth/authorize] 用户传入内容:")
+        print(f"   user_id: {current_user.id}")
+        print(f"   username: {current_user.username}")
+        print(f"   request: {request.model_dump()}")
+        print(f"   is_shared: {request.is_shared}")
+        
         result = await service.get_oauth_authorize_url(
             user_id=current_user.id,
             is_shared=request.is_shared
@@ -227,6 +234,37 @@ async def delete_account(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"删除账号失败"
+        )
+
+
+@router.put(
+    "/accounts/{cookie_id}/name",
+    summary="更新账号名称",
+    description="修改指定账号的名称"
+)
+async def update_account_name(
+    cookie_id: str,
+    request: UpdateAccountNameRequest,
+    current_user: User = Depends(get_current_user),
+    service: PluginAPIService = Depends(get_plugin_api_service)
+):
+    """更新账号名称"""
+    try:
+        result = await service.update_account_name(
+            user_id=current_user.id,
+            cookie_id=cookie_id,
+            name=request.name
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"更新账号名称失败"
         )
 
 
