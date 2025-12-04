@@ -266,12 +266,18 @@ async def get_user_from_api_key(
             cached_data = await redis.get_json(cache_key)
             if cached_data:
                 logger.debug(f"从缓存获取 API key 认证结果: {api_key[:10]}...")
-                # 从缓存重建 User 对象
+                # 从缓存重建完整的 User 对象
+                from datetime import datetime
                 user = User(
                     id=cached_data["id"],
                     username=cached_data["username"],
                     is_active=cached_data["is_active"],
-                    beta=cached_data.get("beta", 0)
+                    beta=cached_data.get("beta", 0),
+                    trust_level=cached_data.get("trust_level", 0),
+                    is_silenced=cached_data.get("is_silenced", False),
+                    created_at=datetime.fromisoformat(cached_data["created_at"]) if cached_data.get("created_at") else datetime.utcnow(),
+                    avatar_url=cached_data.get("avatar_url"),
+                    last_login_at=datetime.fromisoformat(cached_data["last_login_at"]) if cached_data.get("last_login_at") else None
                 )
                 user._config_type = cached_data.get("_config_type")
                 
@@ -319,13 +325,18 @@ async def get_user_from_api_key(
         # 将config_type附加到user对象上，供路由使用
         user._config_type = key_record.config_type
         
-        # 3. 存入缓存
+        # 3. 存入缓存 - 包含所有必需字段
         try:
             user_data = {
                 "id": user.id,
                 "username": user.username,
                 "is_active": user.is_active,
                 "beta": user.beta,
+                "trust_level": user.trust_level,
+                "is_silenced": user.is_silenced,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "avatar_url": user.avatar_url,
+                "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
                 "_config_type": key_record.config_type
             }
             await redis.set_json(cache_key, user_data, expire=API_KEY_AUTH_CACHE_TTL)

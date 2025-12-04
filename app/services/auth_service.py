@@ -309,11 +309,17 @@ class AuthService:
                 cached_data = await self.redis.get_json(cache_key)
                 if cached_data:
                     logger.debug(f"从缓存获取 JWT 用户信息: user_id={user_id}")
+                    # 从缓存恢复完整的User对象
                     user = User(
                         id=cached_data["id"],
                         username=cached_data["username"],
                         is_active=cached_data["is_active"],
-                        beta=cached_data.get("beta", 0)
+                        beta=cached_data.get("beta", 0),
+                        trust_level=cached_data.get("trust_level", 0),
+                        is_silenced=cached_data.get("is_silenced", False),
+                        created_at=datetime.fromisoformat(cached_data["created_at"]) if cached_data.get("created_at") else datetime.utcnow(),
+                        avatar_url=cached_data.get("avatar_url"),
+                        last_login_at=datetime.fromisoformat(cached_data["last_login_at"]) if cached_data.get("last_login_at") else None
                     )
                     return user
             except Exception as e:
@@ -341,13 +347,18 @@ class AuthService:
                     details={"user_id": user.id}
                 )
             
-            # 存入缓存（短期缓存，30秒）
+            # 存入缓存（短期缓存，30秒）- 包含所有必需字段
             try:
                 user_data = {
                     "id": user.id,
                     "username": user.username,
                     "is_active": user.is_active,
-                    "beta": user.beta
+                    "beta": user.beta,
+                    "trust_level": user.trust_level,
+                    "is_silenced": user.is_silenced,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "avatar_url": user.avatar_url,
+                    "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None
                 }
                 await self.redis.set_json(cache_key, user_data, expire=JWT_USER_CACHE_TTL)
                 logger.debug(f"JWT 用户信息已缓存: user_id={user_id}, TTL={JWT_USER_CACHE_TTL}s")
