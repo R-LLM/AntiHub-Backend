@@ -510,16 +510,16 @@ class AnthropicAdapter:
         for tool_call in tool_calls:
             if tool_call.get("type") == "function":
                 func = tool_call.get("function", {})
-                arguments_str = func.get("arguments", "{}")
+                arguments_str = func.get("arguments", "{}") or "{}"  # 处理空字符串情况
                 
                 try:
                     input_data = json.loads(arguments_str)
                 except json.JSONDecodeError as e:
                     # 记录解析失败的详细信息
-                    logger.error(f"工具调用参数JSON解析失败: {e}")
-                    logger.error(f"原始arguments字符串: {arguments_str}")
-                    logger.error(f"工具名称: {func.get('name', 'unknown')}")
-                    logger.error(f"工具调用ID: {tool_call.get('id', 'unknown')}")
+                    logger.warning(f"工具调用参数JSON解析失败: {e}")
+                    logger.warning(f"原始arguments字符串: '{arguments_str}'")
+                    logger.warning(f"工具名称: {func.get('name', 'unknown')}")
+                    logger.warning(f"工具调用ID: {tool_call.get('id', 'unknown')}")
                     input_data = {}
                 
                 content.append(AnthropicResponseToolUseContent(
@@ -893,15 +893,15 @@ class AnthropicAdapter:
             block_index = current_block_index + idx
             
             # 解析参数
-            arguments_str = tc['arguments']
+            arguments_str = tc['arguments'] or "{}"  # 处理空字符串情况
             try:
-                input_data = json.loads(arguments_str) if arguments_str else {}
+                input_data = json.loads(arguments_str) if arguments_str and arguments_str.strip() else {}
             except json.JSONDecodeError as e:
                 # 记录解析失败的详细信息
-                logger.error(f"流式响应工具调用参数JSON解析失败: {e}")
-                logger.error(f"原始arguments字符串: {arguments_str}")
-                logger.error(f"工具名称: {tc['name']}")
-                logger.error(f"工具调用ID: {tc['id']}")
+                logger.warning(f"流式响应工具调用参数JSON解析失败: {e}")
+                logger.warning(f"原始arguments字符串: '{arguments_str}'")
+                logger.warning(f"工具名称: {tc['name']}")
+                logger.warning(f"工具调用ID: {tc['id']}")
                 input_data = {}
             
             # content_block_start for tool_use
